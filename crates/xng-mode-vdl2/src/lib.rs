@@ -42,6 +42,8 @@ pub struct Vdl2Frame {
     pub freq_skew_hz: f32,
     /// EVM-derived per-burst SNR (dB) from the symbol decision residuals (VDL2-8).
     pub snr_db: f32,
+    /// Burst transmission length (header-defined), octets.
+    pub burst_len_octets: usize,
 }
 
 pub struct Vdl2ChannelDecoder {
@@ -156,6 +158,7 @@ impl Vdl2ChannelDecoder {
                     rs_corrected: burst.rs_corrected,
                     freq_skew_hz: burst.freq_skew_hz,
                     snr_db: burst.snr_db,
+                    burst_len_octets: burst.bits.len().div_ceil(8),
                 });
             }
         }
@@ -291,10 +294,17 @@ pub fn to_message(f: &Vdl2Frame, frequency_hz: u64, level_dbfs: f32, source: Pro
             let mut core = b.core.clone();
             core.vdl2_link = Some(serde_json::json!({
                 "src": f.avlc.src, "dst": f.avlc.dst, "control": f.avlc.control,
+                "burst_len_octets": f.burst_len_octets,
             }));
             (MessageBody::Acars(core), b.crc_ok, Some(b.parity_errors))
         }
-        None => (avlc_body(&f.avlc, f.atn.as_ref()), true, None),
+        None => {
+            let mut body = avlc_body(&f.avlc, f.atn.as_ref());
+            if let MessageBody::Vdl2 { details, .. } = &mut body {
+                details["burst_len_octets"] = serde_json::json!(f.burst_len_octets);
+            }
+            (body, true, None)
+        }
     };
     Message {
         mode: Mode::Vdl2,

@@ -37,12 +37,13 @@ pub fn format_dumpvdl2_with_station(msg: &Message, station_id: Option<&str>) -> 
     if msg.mode != xng_types::Mode::Vdl2 {
         return None;
     }
-    let avlc = match &msg.body {
-        MessageBody::Acars(core) => acars_avlc(msg, core)?,
-        MessageBody::Vdl2 { kind, details } if kind == "xid" => xid_avlc(details)?,
+    let (avlc, link) = match &msg.body {
+        MessageBody::Acars(core) => (acars_avlc(msg, core)?, core.vdl2_link.as_ref()?),
+        MessageBody::Vdl2 { kind, details } if kind == "xid" => (xid_avlc(details)?, details),
         _ => return None,
     };
-    envelope(msg, avlc, station_id)
+    let burst_len = link.get("burst_len_octets").and_then(Value::as_u64).unwrap_or(0);
+    envelope(msg, avlc, burst_len, station_id)
 }
 
 /// The AVLC wrapper every frame shares: addresses, C/R, and the control field
@@ -144,27 +145,33 @@ fn acars_avlc(msg: &Message, core: &xng_types::AcarsCore) -> Option<Value> {
     if let Some(s) = msg_num_seq {
         acars.insert("msg_num_seq".into(), json!(s));
     }
-    if !core.text.is_empty() {
-        acars.insert("msg_text".into(), json!(core.text));
-    }
+    // Always present (empty when the block has no text), as dumpvdl2 emits
+    // it; strict dumpvdl2-JSON parsers (acars_router) require the field.
+    acars.insert("msg_text".into(), json!(core.text));
     avlc.as_object_mut().unwrap().insert("acars".into(), Value::Object(acars));
     Some(avlc)
 }
 
 /// Wrap a rendered `avlc` object in dumpvdl2's `vdl2` envelope.
-fn envelope(msg: &Message, avlc: Value, station_id: Option<&str>) -> Option<Value> {
+fn envelope(msg: &Message, avlc: Value, burst_len: u64, station_id: Option<&str>) -> Option<Value> {
     // Envelope. app name/ver are hardcoded to the dumpvdl2 wire identity (not
-    // xng's) so the ingest recognizes the producer. Gap fields dumpvdl2 emits
-    // but xng doesn't track (burst_len_octets / hdr_bits_fixed / idx /
-    // noise_level) are omitted rather than faked.
+    // xng's) so the ingest recognizes the producer. The gap field dumpvdl2 emits
+    // but xng does not track (hdr_bits_fixed) is omitted rather than faked;
+    // noise_level appears when the decoder measured one.
     let ts = msg.timestamp;
     let mut vdl2 = json!({
         "app": { "name": "dumpvdl2", "ver": "2.6.0" },
         "t": { "sec": ts.timestamp(), "usec": ts.timestamp_subsec_micros() },
         "freq": msg.frequency_hz,
         "octets_corrected_by_fec": msg.decode.fec_corrected.unwrap_or(0),
+        // Required by strict dumpvdl2-JSON parsers (acars_router).
+        "burst_len_octets": burst_len,
+        "idx": msg.source.channel.as_ref().map_or(0, |c| c.index),
         "avlc": avlc,
     });
+    if let Some(n) = msg.signal.noise_db {
+        vdl2["noise_level"] = json!(n);
+    }
     if let Some(l) = msg.signal.rssi_db {
         vdl2["sig_level"] = json!(l);
     }
@@ -542,6 +549,7 @@ mod tests {
                 rs_corrected: 0,
                 freq_skew_hz: 0.0,
                 snr_db: 0.0,
+                burst_len_octets: 0,
             };
             let msg = xng_mode_vdl2::to_message(&f, 136_975_000, -10.0, prov.clone());
             let v = format_dumpvdl2(&msg).expect("XID serialized");
