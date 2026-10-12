@@ -175,15 +175,17 @@ docker run --rm ghcr.io/airframesio/xng:latest --version
 
 ## Building
 
-Requirements: a stable [Rust](https://rustup.rs) toolchain, a **protobuf
-compiler**, and (for live SDR use) **SoapySDR** with your vendor module.
+Requirements: a stable [Rust](https://rustup.rs) toolchain and (for live
+SDR use) **SoapySDR** with your vendor module. No protobuf compiler is
+needed: the asf-2.0 schema is compiled in pure Rust
+([protox](https://crates.io/crates/protox)).
 
 ```bash
 # Debian / Ubuntu
-sudo apt install protobuf-compiler libsoapysdr-dev soapysdr-module-all
+sudo apt install libsoapysdr-dev soapysdr-module-all
 
 # macOS
-brew install protobuf soapysdr
+brew install soapysdr
 
 # Build (binary at ./target/release/xng)
 cargo build --release
