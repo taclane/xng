@@ -44,6 +44,10 @@ pub struct Vdl2Frame {
     pub snr_db: f32,
     /// Burst transmission length (header-defined), octets.
     pub burst_len_octets: usize,
+    /// Burst header bits corrected by the header FEC.
+    pub hdr_bits_fixed: u8,
+    /// Channel noise-floor estimate at the burst (dBFS).
+    pub noise_dbfs: f32,
 }
 
 pub struct Vdl2ChannelDecoder {
@@ -158,7 +162,9 @@ impl Vdl2ChannelDecoder {
                     rs_corrected: burst.rs_corrected,
                     freq_skew_hz: burst.freq_skew_hz,
                     snr_db: burst.snr_db,
-                    burst_len_octets: burst.bits.len().div_ceil(8),
+                    burst_len_octets: burst.tl_bits.div_ceil(8),
+                    hdr_bits_fixed: burst.hdr_bits_fixed,
+                    noise_dbfs: burst.noise_dbfs,
                 });
             }
         }
@@ -295,6 +301,7 @@ pub fn to_message(f: &Vdl2Frame, frequency_hz: u64, level_dbfs: f32, source: Pro
             core.vdl2_link = Some(serde_json::json!({
                 "src": f.avlc.src, "dst": f.avlc.dst, "control": f.avlc.control,
                 "burst_len_octets": f.burst_len_octets,
+                "hdr_bits_fixed": f.hdr_bits_fixed,
             }));
             (MessageBody::Acars(core), b.crc_ok, Some(b.parity_errors))
         }
@@ -302,6 +309,7 @@ pub fn to_message(f: &Vdl2Frame, frequency_hz: u64, level_dbfs: f32, source: Pro
             let mut body = avlc_body(&f.avlc, f.atn.as_ref());
             if let MessageBody::Vdl2 { details, .. } = &mut body {
                 details["burst_len_octets"] = serde_json::json!(f.burst_len_octets);
+                details["hdr_bits_fixed"] = serde_json::json!(f.hdr_bits_fixed);
             }
             (body, true, None)
         }
@@ -313,6 +321,7 @@ pub fn to_message(f: &Vdl2Frame, frequency_hz: u64, level_dbfs: f32, source: Pro
         signal: SignalQuality {
             rssi_db: Some(level_dbfs),
             snr_db: Some(f.snr_db),
+            noise_db: Some(f.noise_dbfs),
             freq_skew_hz: Some(f.freq_skew_hz),
             ..Default::default()
         },

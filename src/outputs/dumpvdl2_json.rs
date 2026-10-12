@@ -43,7 +43,8 @@ pub fn format_dumpvdl2_with_station(msg: &Message, station_id: Option<&str>) -> 
         _ => return None,
     };
     let burst_len = link.get("burst_len_octets").and_then(Value::as_u64).unwrap_or(0);
-    envelope(msg, avlc, burst_len, station_id)
+    let hdr_fixed = link.get("hdr_bits_fixed").and_then(Value::as_u64);
+    envelope(msg, avlc, burst_len, hdr_fixed, station_id)
 }
 
 /// The AVLC wrapper every frame shares: addresses, C/R, and the control field
@@ -153,11 +154,15 @@ fn acars_avlc(msg: &Message, core: &xng_types::AcarsCore) -> Option<Value> {
 }
 
 /// Wrap a rendered `avlc` object in dumpvdl2's `vdl2` envelope.
-fn envelope(msg: &Message, avlc: Value, burst_len: u64, station_id: Option<&str>) -> Option<Value> {
+fn envelope(
+    msg: &Message,
+    avlc: Value,
+    burst_len: u64,
+    hdr_fixed: Option<u64>,
+    station_id: Option<&str>,
+) -> Option<Value> {
     // Envelope. app name/ver are hardcoded to the dumpvdl2 wire identity (not
-    // xng's) so the ingest recognizes the producer. The gap field dumpvdl2 emits
-    // but xng does not track (hdr_bits_fixed) is omitted rather than faked;
-    // noise_level appears when the decoder measured one.
+    // xng's) so the ingest recognizes the producer.
     let ts = msg.timestamp;
     let mut vdl2 = json!({
         "app": { "name": "dumpvdl2", "ver": "2.6.0" },
@@ -169,6 +174,9 @@ fn envelope(msg: &Message, avlc: Value, burst_len: u64, station_id: Option<&str>
         "idx": msg.source.channel.as_ref().map_or(0, |c| c.index),
         "avlc": avlc,
     });
+    if let Some(h) = hdr_fixed {
+        vdl2["hdr_bits_fixed"] = json!(h);
+    }
     if let Some(n) = msg.signal.noise_db {
         vdl2["noise_level"] = json!(n);
     }
@@ -550,6 +558,8 @@ mod tests {
                 freq_skew_hz: 0.0,
                 snr_db: 0.0,
                 burst_len_octets: 0,
+                hdr_bits_fixed: 0,
+                noise_dbfs: 0.0,
             };
             let msg = xng_mode_vdl2::to_message(&f, 136_975_000, -10.0, prov.clone());
             let v = format_dumpvdl2(&msg).expect("XID serialized");
