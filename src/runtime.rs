@@ -16,7 +16,7 @@ use xng_mode_ais::AisChannelDecoder;
 use xng_mode_hfdl::HfdlChannelDecoder;
 use xng_mode_iridium::{IridiumChannelDecoder, IridiumWidebandDecoder};
 use xng_mode_stdc::StdcChannelDecoder;
-use xng_mode_vdl2::Vdl2ChannelDecoder;
+use xng_mode_vdl2::{Vdl2ChannelDecoder, Vdl2MultiChannelDecoder};
 // New-mode decode cores (IQ demod + ChannelDecoder + to_message per crate).
 use xng_mode_adsl::AdslChannelDecoder;
 use xng_mode_atcs::AtcsChannelDecoder;
@@ -346,6 +346,9 @@ pub(crate) enum ModeChannel {
     // DDC), generalize the loop to natively drive multi-output decoders
     // instead of special-casing ACARS here.
     AcarsShared { dec: AcarsMultiChannelDecoder, freqs: Vec<u64> },
+    /// Several VDL2 channels sharing one downconverter front end; driven
+    /// like `AcarsShared` via `process_shared`.
+    Vdl2Shared { dec: Vdl2MultiChannelDecoder, freqs: Vec<u64> },
     Ais(AisChannelDecoder),
     Adsb(AdsbDecoder),
     Vdl2(Vdl2ChannelDecoder),
@@ -440,6 +443,11 @@ impl ModeChannel {
         }
     }
 
+    /// A multi-channel decoder driven via `process_shared`.
+    fn is_shared(&self) -> bool {
+        matches!(self, Self::AcarsShared { .. } | Self::Vdl2Shared { .. })
+    }
+
     fn passband_hz(mode: Mode) -> f64 {
         match mode {
             Mode::Ais => xng_mode_ais::CHANNEL_PASSBAND_HZ,
@@ -468,7 +476,7 @@ impl ModeChannel {
         match self {
             Self::Acars(_) | Self::AcarsShared { .. } => xng_mode_acars::CHANNEL_RATE,
             Self::Ais(_) => xng_mode_ais::CHANNEL_RATE,
-            Self::Vdl2(_) => xng_mode_vdl2::CHANNEL_RATE,
+            Self::Vdl2(_) | Self::Vdl2Shared { .. } => xng_mode_vdl2::CHANNEL_RATE,
             Self::Aero(_) | Self::AeroBurst(_) => xng_mode_aero::CHANNEL_RATE,
             Self::StdC(_) => xng_mode_stdc::CHANNEL_RATE,
             Self::Hfdl(_) => xng_mode_hfdl::CHANNEL_RATE,
@@ -502,6 +510,9 @@ impl ModeChannel {
             Self::Ais(d) => d.level_dbfs(),
             Self::Adsb(d) => d.level_dbfs(),
             Self::Vdl2(d) => d.level_dbfs(),
+            Self::Vdl2Shared { dec, .. } => {
+                if dec.num_channels() > 0 { dec.level_dbfs(0) } else { f32::NEG_INFINITY }
+            }
             Self::Aero(d) => d.level_dbfs(),
             Self::AeroBurst(d) => d.level_dbfs(),
             Self::StdC(d) => d.level_dbfs(),
@@ -529,7 +540,7 @@ impl ModeChannel {
         match self {
             // Shared ACARS spans many channels and cannot be tagged with one
             // freq/provenance; the decode loop drives it via `process_shared`.
-            Self::AcarsShared { .. } => (Vec::new(), 0, 0),
+            Self::AcarsShared { .. } | Self::Vdl2Shared { .. } => (Vec::new(), 0, 0),
             Self::Acars(dec) => {
                 let frames = dec.process(iq);
                 let seen = frames.len() as u64;
@@ -790,12 +801,33 @@ impl ModeChannel {
     /// metrics for all of them, matching the single-channel path.
     ///
     /// Returns `(channel_index, freq, level, msgs, seen, ok)` per channel.
-    /// Only `Self::AcarsShared` produces output; other variants return empty.
+    /// Only the `*Shared` variants produce output; other variants return empty.
     fn process_shared(
         &mut self,
         iq: &[Complex<f32>],
         base_prov: &SharedProvenance,
     ) -> Vec<(usize, u64, f32, Vec<Message>, u64, u64)> {
+        if let Self::Vdl2Shared { dec, freqs } = self {
+            let mut decoded: std::collections::HashMap<usize, Vec<xng_mode_vdl2::Vdl2Frame>> =
+                dec.process(iq).into_iter().collect();
+            let mut out = Vec::with_capacity(freqs.len());
+            for (i, &freq) in freqs.iter().enumerate() {
+                let frames = decoded.remove(&i).unwrap_or_default();
+                let level = dec.level_dbfs(i);
+                let prov = base_prov.for_channel(i, freq, xng_mode_vdl2::CHANNEL_RATE);
+                let seen = frames.len() as u64;
+                let ok = frames
+                    .iter()
+                    .filter(|f| f.acars.as_ref().map(|a| a.crc_ok).unwrap_or(true))
+                    .count() as u64;
+                let msgs: Vec<Message> = frames
+                    .iter()
+                    .map(|f| xng_mode_vdl2::to_message(f, freq, level, prov.clone()))
+                    .collect();
+                out.push((i, freq, level, msgs, seen, ok));
+            }
+            return out;
+        }
         let Self::AcarsShared { dec, freqs } = self else {
             return Vec::new();
         };
@@ -1040,7 +1072,7 @@ pub fn run_session(mut source: Box<dyn IqSource>, cfg: SessionConfig) -> anyhow:
         decoders.push((freq, dec));
     }
     let n_channels = decoders.len();
-    decoders = collapse_shared_acars(decoders, sample_rate, capture_center, cfg.mode);
+    decoders = collapse_shared(decoders, sample_rate, capture_center, cfg.mode, cfg.max_ppm);
     tracing::info!(
         "{} session: {} channel(s) from a {:.0} S/s capture centered at {:.3} MHz",
         cfg.mode,
@@ -1157,7 +1189,7 @@ pub(crate) fn decode_loop(
     let shared_indices: Vec<usize> = decoders
         .iter()
         .enumerate()
-        .filter(|(_, (_, d))| matches!(d, ModeChannel::AcarsShared { .. }))
+        .filter(|(_, (_, d))| d.is_shared())
         .map(|(i, _)| i)
         .collect();
     // Per-frequency stats for shared multi-channel decoders, seeded with every
@@ -1165,7 +1197,7 @@ pub(crate) fn decode_loop(
     let mut shared_stats: std::collections::BTreeMap<u64, (u64, u64)> =
         std::collections::BTreeMap::new();
     for (_, d) in &decoders {
-        if let ModeChannel::AcarsShared { freqs, .. } = d {
+        if let ModeChannel::AcarsShared { freqs, .. } | ModeChannel::Vdl2Shared { freqs, .. } = d {
             for &f in freqs {
                 shared_stats.insert(f, (0, 0));
             }
@@ -1238,7 +1270,7 @@ pub(crate) fn decode_loop(
             // vdl2/ais/aero/stdc, fold this into the main path (a decoder
             // yielding per-channel (freq, msgs, …) results) rather than
             // branching on the ACARS variant here.
-            if let ModeChannel::AcarsShared { .. } = dec {
+            if dec.is_shared() {
                 let base = SharedProvenance {
                     station: station.clone(),
                     app: AppInfo::xng(),
@@ -1399,7 +1431,7 @@ pub fn run_station(sessions: Vec<(Box<dyn IqSource>, SessionConfig)>) -> anyhow:
             decoders.push((freq, dec));
         }
         let n_channels = decoders.len();
-        decoders = collapse_shared_acars(decoders, sample_rate, capture_center, cfg.mode);
+        decoders = collapse_shared(decoders, sample_rate, capture_center, cfg.mode, cfg.max_ppm);
         tracing::info!(
             "station session: {} with {} channel(s) at {:.0} S/s centered {:.3} MHz",
             cfg.mode,
@@ -1664,23 +1696,39 @@ pub(crate) fn build_decoders(
         }
         decoders.push((freq, dec));
     }
-    Ok(collapse_shared_acars(decoders, sample_rate, capture_center, cfg.mode))
+    Ok(collapse_shared(decoders, sample_rate, capture_center, cfg.mode, cfg.max_ppm))
 }
 
-/// When an ACARS session has more than one channel, replace the N independent
-/// per-channel `Acars` decoders with a single `AcarsShared` decoder that uses
-/// one shared downconverter front end (the CPU optimization). A single ACARS
-/// channel, or any other mode, is returned unchanged.
+/// When an ACARS or VDL2 session has more than one channel, replace the N
+/// independent per-channel decoders with a single shared decoder that uses one
+/// shared downconverter front end (the CPU optimization). A single channel, or
+/// any other mode, is returned unchanged.
 ///
 /// On failure to build the shared decoder (e.g. a capture too narrow to span
 /// every channel), the original per-channel decoders are kept — the shared
 /// front end is a pure optimization, never a correctness requirement.
-fn collapse_shared_acars(
+fn collapse_shared(
     decoders: Vec<(u64, ModeChannel)>,
     sample_rate: f64,
     capture_center: u64,
     mode: Mode,
+    max_ppm: Option<f64>,
 ) -> Vec<(u64, ModeChannel)> {
+    if mode == Mode::Vdl2 && decoders.len() >= 2 {
+        let freqs: Vec<u64> = decoders.iter().map(|(f, _)| *f).collect();
+        let offsets: Vec<f64> = freqs.iter().map(|&f| f as f64 - capture_center as f64).collect();
+        return match Vdl2MultiChannelDecoder::new(sample_rate, &offsets) {
+            Ok(mut dec) => {
+                dec.set_max_ppm(max_ppm);
+                tracing::info!("VDL2: {} channels share one downconverter front end", freqs.len());
+                vec![(freqs[0], ModeChannel::Vdl2Shared { dec, freqs })]
+            }
+            Err(e) => {
+                tracing::warn!("shared VDL2 front end unavailable ({e}); using per-channel DDCs");
+                decoders
+            }
+        };
+    }
     if mode != Mode::AcarsPoa || decoders.len() < 2 {
         return decoders;
     }

@@ -65,24 +65,7 @@ pub struct Vdl2ChannelDecoder {
 
 impl Vdl2ChannelDecoder {
     pub fn new(input_rate: f64, freq_offset_hz: f64) -> Result<Self, String> {
-        // Prefer the high channel rate when the capture divides into it;
-        // 50 kS/s remains the floor (and the vendored-fixture rate).
-        // Prefer 105 kS/s (an exact 10 samples/symbol) when the input
-        // divides into it: at 100 kS/s every symbol center falls at a
-        // fractional sample position and the linear interpolator's
-        // error acts as decision noise; integer sps removes it.
-        const CHANNEL_RATE_NATIVE: f64 = 105_000.0;
-        let channel_rate = if input_rate >= CHANNEL_RATE_NATIVE
-            && (input_rate / CHANNEL_RATE_NATIVE).fract().abs() < 1e-9
-        {
-            CHANNEL_RATE_NATIVE
-        } else if input_rate >= CHANNEL_RATE_HI
-            && (input_rate / CHANNEL_RATE_HI).fract().abs() < 1e-9
-        {
-            CHANNEL_RATE_HI
-        } else {
-            CHANNEL_RATE
-        };
+        let channel_rate = channel_rate_for(input_rate);
         let ddc = if (input_rate - channel_rate).abs() < 1e-6 && freq_offset_hz.abs() < 1e-6 {
             None
         } else {
@@ -170,6 +153,126 @@ impl Vdl2ChannelDecoder {
     /// (default) accepts every CFO-fit candidate.
     pub fn set_max_ppm(&mut self, ppm: Option<f64>) {
         self.demod.set_max_ppm(ppm);
+    }
+}
+
+/// The channel rate a capture at `input_rate` decodes at.
+///
+/// Prefer the high channel rate when the capture divides into it;
+/// 50 kS/s remains the floor (and the vendored-fixture rate).
+/// Prefer 105 kS/s (an exact 10 samples/symbol) when the input
+/// divides into it: at 100 kS/s every symbol center falls at a
+/// fractional sample position and the linear interpolator's
+/// error acts as decision noise; integer sps removes it.
+pub fn channel_rate_for(input_rate: f64) -> f64 {
+    const CHANNEL_RATE_NATIVE: f64 = 105_000.0;
+    if input_rate >= CHANNEL_RATE_NATIVE && (input_rate / CHANNEL_RATE_NATIVE).fract().abs() < 1e-9 {
+        CHANNEL_RATE_NATIVE
+    } else if input_rate >= CHANNEL_RATE_HI && (input_rate / CHANNEL_RATE_HI).fract().abs() < 1e-9 {
+        CHANNEL_RATE_HI
+    } else {
+        CHANNEL_RATE
+    }
+}
+
+/// Shared multi-channel downconverter front end: a fast-convolution filter
+/// bank ([`xng_dsp::FastConvDdc`]) — one FFT for every channel, exact channel
+/// placement, cost independent of how far channels sit from the capture
+/// center — or a shared decimation ([`xng_dsp::SharedDdc`]) as the fallback.
+///
+/// (The polyphase [`xng_dsp::ChannelizedDdc`] that serves ACARS is not used:
+/// its critically sampled bins alias near the bin edges, which the
+/// AM-envelope ACARS demod tolerates but D8PSK does not.)
+enum Front {
+    FastConv(xng_dsp::FastConvDdc),
+    Shared(xng_dsp::SharedDdc),
+}
+
+impl Front {
+    fn process(&mut self, input: &[Complex<f32>], out: &mut [Vec<Complex<f32>>]) {
+        match self {
+            Self::FastConv(f) => f.process(input, out),
+            Self::Shared(s) => s.process(input, out),
+        }
+    }
+}
+
+/// Decodes SEVERAL VDL2 channels out of one wideband capture with a single
+/// shared downconverter front end: the wideband-rate work is done once, then
+/// each channel runs the usual [`Vdl2ChannelDecoder`] at the channel rate
+/// (selectivity filter, D8PSK demod, AVLC/ACARS/ATN). Equivalent output to N
+/// independent decoders, without N full-rate DDCs.
+pub struct Vdl2MultiChannelDecoder {
+    front: Front,
+    backs: Vec<Vdl2ChannelDecoder>,
+    channel_bufs: Vec<Vec<Complex<f32>>>,
+}
+
+impl Vdl2MultiChannelDecoder {
+    /// `input_rate` is the wideband capture rate; `offsets` are each channel's
+    /// center relative to the capture center (Hz).
+    pub fn new(input_rate: f64, offsets: &[f64]) -> Result<Self, String> {
+        let rate = channel_rate_for(input_rate);
+        let front = match xng_dsp::FastConvDdc::new(input_rate, rate, offsets, CHANNEL_PASSBAND_HZ) {
+            Ok(f) => Front::FastConv(f),
+            Err(chan_err) => Front::Shared(
+                xng_dsp::SharedDdc::new(input_rate, rate, offsets, CHANNEL_PASSBAND_HZ).map_err(
+                    |shared_err| {
+                        format!(
+                            "fast-convolution rejected ({chan_err}); shared-decim also failed ({shared_err})"
+                        )
+                    },
+                )?,
+            ),
+        };
+        Self::with_front(front, rate, offsets.len())
+    }
+
+    /// Build with the shared-decimation front end explicitly (to compare
+    /// front ends).
+    pub fn new_shared(input_rate: f64, offsets: &[f64]) -> Result<Self, String> {
+        let rate = channel_rate_for(input_rate);
+        let front =
+            Front::Shared(xng_dsp::SharedDdc::new(input_rate, rate, offsets, CHANNEL_PASSBAND_HZ)?);
+        Self::with_front(front, rate, offsets.len())
+    }
+
+    fn with_front(front: Front, rate: f64, n: usize) -> Result<Self, String> {
+        // Each back end receives baseband channel IQ already at `rate`, so it
+        // runs without a DDC (just its selectivity filter).
+        let backs = (0..n).map(|_| Vdl2ChannelDecoder::new(rate, 0.0)).collect::<Result<_, _>>()?;
+        Ok(Self { front, backs, channel_bufs: vec![Vec::new(); n] })
+    }
+
+    /// Number of channels.
+    pub fn num_channels(&self) -> usize {
+        self.backs.len()
+    }
+
+    /// Feed wideband IQ; returns the decoded frames for channel `i` as
+    /// `(i, frames)` for every channel that produced any.
+    pub fn process(&mut self, input: &[Complex<f32>]) -> Vec<(usize, Vec<Vdl2Frame>)> {
+        self.front.process(input, &mut self.channel_bufs);
+        let mut out = Vec::new();
+        for (i, (back, buf)) in self.backs.iter_mut().zip(self.channel_bufs.iter()).enumerate() {
+            let frames = back.process(buf);
+            if !frames.is_empty() {
+                out.push((i, frames));
+            }
+        }
+        out
+    }
+
+    /// Signal level (dBFS) for channel `i`.
+    pub fn level_dbfs(&self, i: usize) -> f32 {
+        self.backs[i].level_dbfs()
+    }
+
+    /// Apply the CFO reject (VDL2-7) to every channel.
+    pub fn set_max_ppm(&mut self, ppm: Option<f64>) {
+        for b in &mut self.backs {
+            b.set_max_ppm(ppm);
+        }
     }
 }
 
