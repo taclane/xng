@@ -3,7 +3,7 @@
 //! Everything downstream of this crate consumes the [`IqSource`] trait, so
 //! decode cores are agnostic to whether samples come from hardware — SoapySDR
 //! behind the `soapy` feature, or native Airspy backends behind `airspy`
-//! (R2/Mini, libairspy) and `airspyhf` (HF+/Discovery, libairspyhf) — or from
+//! (R2/Mini, pure-Rust libairspy-rs) and `airspyhf` (HF+/Discovery, libairspyhf) — or from
 //! recorded IQ files (always available — the basis for regression testing
 //! decode cores against golden captures).
 

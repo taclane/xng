@@ -1,0 +1,4 @@
+# Airspy R2 / Mini: let the plugdev group (and the logged-in seat user)
+# open the device. xng drives it directly over USB (pure-Rust libairspy-rs),
+# so the libairspy0 package that normally ships this rule is not required.
+SUBSYSTEM=="usb", ATTR{idVendor}=="1d50", ATTR{idProduct}=="60a1", MODE="0660", GROUP="plugdev", TAG+="uaccess"

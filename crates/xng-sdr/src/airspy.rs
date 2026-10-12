@@ -1,109 +1,57 @@
-//! Native Airspy R2 / Mini capture via libairspy (BSD 3-clause).
+//! Native Airspy R2 / Mini capture via `libairspy-rs` (BSD-3-Clause AND MIT).
 //!
-//! Direct FFI against the libairspy C API (declarations transcribed from
-//! airspyone_host's airspy.h), so Airspy hardware works without a SoapyAirspy
-//! shim. The library delivers float32 IQ on its own USB thread; samples cross
-//! into [`crate::IqSource::read`] through [`crate::pump::SamplePump`].
+//! `libairspy-rs` is a pure-Rust port of libairspy on `nusb`: same USB wire
+//! behavior, and real-to-IQ converters bit-exact against the C library's
+//! golden vectors. No C library, libusb, or pkg-config is needed at build or
+//! run time. The driver delivers float32 IQ on its own consumer thread;
+//! samples cross into [`crate::IqSource::read`] through
+//! [`crate::pump::SamplePump`].
 //!
 //! Rates: the device advertises a discrete list (R2: 2.5/10 Msps, Mini:
-//! 3/6 Msps), but firmware >= 1.0.7 accepts arbitrary rates, which libairspy
+//! 3/6 Msps), but firmware >= 1.0.7 accepts arbitrary rates, which the driver
 //! forwards in kHz when the request is not in the list. We therefore attempt
 //! whatever was asked and only report the advertised list if the device
 //! refuses.
 
 use crate::pump::{SamplePump, sample_channel};
 use crate::{IqSource, SdrError};
+use libairspy::conversion::Samples;
+use libairspy::stream::Transfer;
+use libairspy::Device;
 use num_complex::Complex;
-use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
-mod ffi {
-    use std::os::raw::{c_int, c_void};
-
-    pub enum Device {}
-
-    #[repr(C)]
-    pub struct Transfer {
-        pub device: *mut Device,
-        pub ctx: *mut c_void,
-        pub samples: *mut c_void,
-        pub sample_count: c_int,
-        pub dropped_samples: u64,
-        pub sample_type: c_int,
-    }
-
-    #[repr(C)]
-    pub struct LibVersion {
-        pub major: u32,
-        pub minor: u32,
-        pub revision: u32,
-    }
-
-    pub const AIRSPY_SAMPLE_FLOAT32_IQ: c_int = 0;
-    pub const AIRSPY_SUCCESS: c_int = 0;
-
-    pub type SampleBlockCb = unsafe extern "C" fn(*mut Transfer) -> c_int;
-
-    extern "C" {
-        pub fn airspy_lib_version(version: *mut LibVersion);
-        pub fn airspy_list_devices(serials: *mut u64, count: c_int) -> c_int;
-        pub fn airspy_open(device: *mut *mut Device) -> c_int;
-        pub fn airspy_open_sn(device: *mut *mut Device, serial_number: u64) -> c_int;
-        pub fn airspy_close(device: *mut Device) -> c_int;
-        pub fn airspy_get_samplerates(device: *mut Device, buffer: *mut u32, len: u32) -> c_int;
-        pub fn airspy_set_samplerate(device: *mut Device, samplerate: u32) -> c_int;
-        pub fn airspy_set_sample_type(device: *mut Device, sample_type: c_int) -> c_int;
-        pub fn airspy_set_freq(device: *mut Device, freq_hz: u32) -> c_int;
-        pub fn airspy_set_vga_gain(device: *mut Device, value: u8) -> c_int;
-        pub fn airspy_set_lna_agc(device: *mut Device, value: u8) -> c_int;
-        pub fn airspy_set_mixer_agc(device: *mut Device, value: u8) -> c_int;
-        pub fn airspy_set_linearity_gain(device: *mut Device, value: u8) -> c_int;
-        pub fn airspy_set_rf_bias(device: *mut Device, value: u8) -> c_int;
-        pub fn airspy_start_rx(device: *mut Device, cb: SampleBlockCb, ctx: *mut c_void) -> c_int;
-        pub fn airspy_stop_rx(device: *mut Device) -> c_int;
-    }
+fn dev_err(what: &str, e: libairspy::Error) -> SdrError {
+    SdrError::Device(format!("{what}: {e}"))
 }
 
-/// libairspy version triple (linkage smoke test; works without hardware).
+/// Driver version triple (smoke test; works without hardware).
 pub fn lib_version() -> (u32, u32, u32) {
-    let mut v = ffi::LibVersion { major: 0, minor: 0, revision: 0 };
-    unsafe { ffi::airspy_lib_version(&mut v) };
+    let v = libairspy::lib_version();
     (v.major, v.minor, v.revision)
 }
 
 /// Serial numbers of connected Airspy devices.
 pub fn enumerate() -> Result<Vec<u64>, SdrError> {
-    let count = unsafe { ffi::airspy_list_devices(std::ptr::null_mut(), 0) };
-    if count < 0 {
-        return Err(SdrError::Device(format!("airspy_list_devices: {count}")));
-    }
-    let mut serials = vec![0u64; count as usize];
-    if count > 0 {
-        let got = unsafe { ffi::airspy_list_devices(serials.as_mut_ptr(), count) };
-        serials.truncate(got.max(0) as usize);
-    }
-    Ok(serials)
+    libairspy::list_devices().map_err(|e| dev_err("airspy list_devices", e))
 }
 
 /// Tuner range from airspy.h: 24 MHz .. 1.75 GHz.
 pub const FREQ_MIN_HZ: u64 = 24_000_000;
 pub const FREQ_MAX_HZ: u64 = 1_750_000_000;
 
+fn open_device(serial: Option<u64>) -> Result<Device, libairspy::Error> {
+    match serial {
+        Some(sn) => Device::open_serial(sn),
+        None => Device::open(),
+    }
+}
+
 /// The sample rates a connected device advertises (briefly opens it).
 pub fn device_rates(serial: Option<u64>) -> Result<Vec<u32>, SdrError> {
-    let mut dev: *mut ffi::Device = std::ptr::null_mut();
-    let ret = match serial {
-        Some(sn) => unsafe { ffi::airspy_open_sn(&mut dev, sn) },
-        None => unsafe { ffi::airspy_open(&mut dev) },
-    };
-    if ret != ffi::AIRSPY_SUCCESS {
-        return Err(SdrError::Device(format!("airspy_open: error {ret}")));
-    }
-    let rates = supported_rates(dev);
-    unsafe { ffi::airspy_close(dev) };
-    Ok(rates)
+    let dev = open_device(serial).map_err(|e| dev_err("airspy open", e))?;
+    Ok(dev.samplerates())
 }
 
 /// Map a requested dB gain onto the R820T linearity-optimized composite gain
@@ -115,7 +63,7 @@ pub fn linearity_index(gain_db: f64) -> u8 {
 #[derive(Default)]
 struct StreamStats {
     transfers: AtomicU64,
-    /// Samples libairspy dropped at the USB/device level (its own counter).
+    /// Samples the driver dropped at the USB/device level (its own counter).
     usb_dropped: AtomicU64,
     /// Transfers dropped because our consumer channel was full.
     chan_dropped: AtomicU64,
@@ -123,51 +71,15 @@ struct StreamStats {
     near_zero: AtomicU64,
 }
 
-struct StreamCtx {
-    tx: SyncSender<Vec<Complex<f32>>>,
-    stats: Arc<StreamStats>,
-}
-
-unsafe extern "C" fn rx_callback(transfer: *mut ffi::Transfer) -> c_int {
-    let t = &*transfer;
-    if t.sample_type == ffi::AIRSPY_SAMPLE_FLOAT32_IQ && t.sample_count > 0 {
-        let n = t.sample_count as usize;
-        let samples = std::slice::from_raw_parts(t.samples as *const Complex<f32>, n);
-        let ctx = &*(t.ctx as *const StreamCtx);
-        ctx.stats.transfers.fetch_add(1, Ordering::Relaxed);
-        if t.dropped_samples > 0 {
-            ctx.stats.usb_dropped.fetch_add(t.dropped_samples, Ordering::Relaxed);
-        }
-        let head_pwr: f32 = samples.iter().take(64).map(|s| s.norm_sqr()).sum();
-        if head_pwr < 1e-9 {
-            ctx.stats.near_zero.fetch_add(1, Ordering::Relaxed);
-        }
-        // Drop the transfer if the consumer is behind; stalling the USB
-        // thread only moves the overflow into the device.
-        if ctx.tx.try_send(samples.to_vec()).is_err() {
-            ctx.stats.chan_dropped.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    0
-}
-
 /// A single-channel RX capture from an Airspy R2/Mini.
 pub struct AirspyIqSource {
-    dev: *mut ffi::Device,
-    // Referenced by the USB callback until airspy_stop_rx returns.
-    _ctx: Box<StreamCtx>,
+    // Stops streaming and releases the interface on drop.
+    _dev: Device,
     pump: SamplePump,
     sample_rate: f64,
     center_freq_hz: u64,
     stats: Arc<StreamStats>,
     reads: u64,
-}
-
-// The device handle is only touched from Drop; samples arrive via the channel.
-unsafe impl Send for AirspyIqSource {}
-
-fn check(what: &str, ret: c_int) -> Result<(), SdrError> {
-    if ret == ffi::AIRSPY_SUCCESS { Ok(()) } else { Err(SdrError::Device(format!("{what}: error {ret}"))) }
 }
 
 impl AirspyIqSource {
@@ -187,91 +99,70 @@ impl AirspyIqSource {
                 "airspy tunes 24 MHz .. 1.75 GHz; {center_freq_hz} Hz is outside"
             )));
         }
-        let mut dev: *mut ffi::Device = std::ptr::null_mut();
-        let ret = match serial {
-            Some(sn) => unsafe { ffi::airspy_open_sn(&mut dev, sn) },
-            None => unsafe { ffi::airspy_open(&mut dev) },
-        };
-        if ret != ffi::AIRSPY_SUCCESS {
-            return Err(SdrError::Device(format!(
-                "airspy_open: error {ret} (no Airspy R2/Mini connected{}?)",
+        let mut dev = open_device(serial).map_err(|e| {
+            SdrError::Device(format!(
+                "airspy open: {e} (no Airspy R2/Mini connected{}?)",
                 if serial.is_some() { " with that serial" } else { "" }
-            )));
-        }
-        let guard = scopeguard(dev);
-
-        check("set_sample_type", unsafe {
-            ffi::airspy_set_sample_type(dev, ffi::AIRSPY_SAMPLE_FLOAT32_IQ)
+            ))
         })?;
 
+        dev.set_sample_type(libairspy::commands::SampleType::Float32Iq)
+            .map_err(|e| dev_err("set_sample_type", e))?;
+
         let rate = sample_rate.round() as u32;
-        if unsafe { ffi::airspy_set_samplerate(dev, rate) } != ffi::AIRSPY_SUCCESS {
+        if dev.set_samplerate(rate).is_err() {
             // Verified on a Mini running the final firmware (v1.0.0-rc10-6):
-            // off-list rates are refused even though libairspy forwards
+            // off-list rates are refused even though the driver forwards
             // them, so the advertised list is the only safe guidance.
-            let supported = supported_rates(dev);
             return Err(SdrError::Config(format!(
                 "device refused {rate} S/s; use one of its supported rates: {}",
-                supported.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(", ")
+                dev.samplerates().iter().map(|r| r.to_string()).collect::<Vec<_>>().join(", ")
             )));
         }
 
         match gain_db {
-            Some(g) => check("set_linearity_gain", unsafe {
-                ffi::airspy_set_linearity_gain(dev, linearity_index(g))
-            })?,
+            Some(g) => dev
+                .set_linearity_gain(linearity_index(g))
+                .map_err(|e| dev_err("set_linearity_gain", e))?,
             None => {
-                check("set_lna_agc", unsafe { ffi::airspy_set_lna_agc(dev, 1) })?;
-                check("set_mixer_agc", unsafe { ffi::airspy_set_mixer_agc(dev, 1) })?;
-                check("set_vga_gain", unsafe { ffi::airspy_set_vga_gain(dev, 13) })?;
+                dev.set_lna_agc(true).map_err(|e| dev_err("set_lna_agc", e))?;
+                dev.set_mixer_agc(true).map_err(|e| dev_err("set_mixer_agc", e))?;
+                dev.set_vga_gain(13).map_err(|e| dev_err("set_vga_gain", e))?;
             }
         }
         if bias_t {
-            check("set_rf_bias", unsafe { ffi::airspy_set_rf_bias(dev, 1) })?;
+            dev.set_rf_bias(true).map_err(|e| dev_err("set_rf_bias", e))?;
         }
-        check("set_freq", unsafe { ffi::airspy_set_freq(dev, center_freq_hz as u32) })?;
+        dev.set_freq(center_freq_hz as u32).map_err(|e| dev_err("set_freq", e))?;
 
         let (tx, pump) = sample_channel();
         let stats = Arc::new(StreamStats::default());
-        let ctx = Box::new(StreamCtx { tx, stats: stats.clone() });
-        check("start_rx", unsafe {
-            ffi::airspy_start_rx(dev, rx_callback, &*ctx as *const StreamCtx as *mut c_void)
-        })?;
+        let cb_stats = stats.clone();
+        dev.start_rx(move |t: Transfer<'_>| {
+            let Samples::Float32(iq) = t.samples else { return true };
+            if iq.len() < 2 {
+                return true;
+            }
+            cb_stats.transfers.fetch_add(1, Ordering::Relaxed);
+            if t.dropped_samples > 0 {
+                cb_stats.usb_dropped.fetch_add(t.dropped_samples, Ordering::Relaxed);
+            }
+            let samples: Vec<Complex<f32>> =
+                iq.chunks_exact(2).map(|p| Complex::new(p[0], p[1])).collect();
+            let head_pwr: f32 = samples.iter().take(64).map(|s| s.norm_sqr()).sum();
+            if head_pwr < 1e-9 {
+                cb_stats.near_zero.fetch_add(1, Ordering::Relaxed);
+            }
+            // Drop the transfer if the consumer is behind; stalling the
+            // driver thread only moves the overflow into the device.
+            if tx.try_send(samples).is_err() {
+                cb_stats.chan_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            true
+        })
+        .map_err(|e| dev_err("start_rx", e))?;
 
-        std::mem::forget(guard);
-        Ok(Self { dev, _ctx: ctx, pump, sample_rate, center_freq_hz, stats, reads: 0 })
-    }
-}
-
-fn supported_rates(dev: *mut ffi::Device) -> Vec<u32> {
-    let mut count: u32 = 0;
-    if unsafe { ffi::airspy_get_samplerates(dev, &mut count, 0) } != ffi::AIRSPY_SUCCESS || count == 0 {
-        return Vec::new();
-    }
-    let mut rates = vec![0u32; count as usize];
-    if unsafe { ffi::airspy_get_samplerates(dev, rates.as_mut_ptr(), count) } != ffi::AIRSPY_SUCCESS {
-        return Vec::new();
-    }
-    rates
-}
-
-/// Close `dev` on early-exit paths in `open` (defused with `mem::forget`).
-fn scopeguard(dev: *mut ffi::Device) -> impl Drop {
-    struct G(*mut ffi::Device);
-    impl Drop for G {
-        fn drop(&mut self) {
-            unsafe { ffi::airspy_close(self.0) };
-        }
-    }
-    G(dev)
-}
-
-impl Drop for AirspyIqSource {
-    fn drop(&mut self) {
-        unsafe {
-            ffi::airspy_stop_rx(self.dev);
-            ffi::airspy_close(self.dev);
-        }
+        Ok(Self { _dev: dev, pump, sample_rate, center_freq_hz, stats, reads: 0 })
     }
 }
 
@@ -310,11 +201,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn linkage_and_enumeration_work_without_hardware() {
-        let (major, _, _) = lib_version();
-        assert!(major >= 1);
-        // No device attached in CI: must still return cleanly.
-        enumerate().expect("enumerate");
+    fn driver_and_enumeration_work_without_hardware() {
+        let _ = lib_version();
+        // No device attached in CI: must still return cleanly. A host with
+        // no usable USB stack (some containers) reports an error instead of
+        // an empty list; either way it must not panic.
+        let _ = enumerate();
     }
 
     #[test]

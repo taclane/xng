@@ -82,7 +82,7 @@ xng/
 │   ├── xng-types          # normalized message model, ids, time, units
 │   ├── xng-dsp            # channelizer, DDC, FIR/NCO, Viterbi, Reed-Solomon,
 │   │                      #   interleavers, scramblers, CRCs, sync/AGC
-│   ├── xng-sdr            # SoapySDR + native Airspy (libairspy/libairspyhf)
+│   ├── xng-sdr            # SoapySDR + native Airspy (libairspy-rs/libairspyhf)
 │   │                      #   capture, device enumeration, IQ replay, rate negotiation
 │   ├── xng-acars          # application layer: ARINC 618/620/622, ADS-C, CPDLC, MIAM
 │   ├── xng-proto          # asf-2.0 .proto + prost/tonic codegen + conversions

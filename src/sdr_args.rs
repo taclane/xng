@@ -1,7 +1,7 @@
 //! `--sdr` argument parsing: SoapySDR-style comma-separated `key=value` pairs.
 //!
 //! The same string serves both backends. `driver=airspy` / `driver=airspyhf`
-//! route to the native libairspy/libairspyhf backends when compiled in (and
+//! route to the native libairspy-rs/libairspyhf backends when compiled in (and
 //! fall through to SoapySDR otherwise); `backend=soapy` forces SoapySDR even
 //! when a native backend exists.
 

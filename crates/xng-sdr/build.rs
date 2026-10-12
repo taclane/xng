@@ -1,4 +1,5 @@
-//! Link the native Airspy libraries when the corresponding features are on.
+//! Link libairspyhf when the `airspyhf` feature is on. (The R2/Mini `airspy`
+//! backend is pure Rust via libairspy-rs and links nothing.)
 //! pkg-config emits the search paths and link directives; the fallback covers
 //! installs without .pc files (plain `make install` to a standard prefix).
 
@@ -18,6 +19,5 @@ fn link(feature_env: &str, pc_name: &str, lib: &str) {
 }
 
 fn main() {
-    link("CARGO_FEATURE_AIRSPY", "libairspy", "airspy");
     link("CARGO_FEATURE_AIRSPYHF", "libairspyhf", "airspyhf");
 }

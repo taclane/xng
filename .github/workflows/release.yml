@@ -33,10 +33,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt update
-          sudo apt install -y libsoapysdr-dev libairspy-dev libairspyhf-dev protobuf-compiler
+          sudo apt install -y libsoapysdr-dev libairspyhf-dev protobuf-compiler
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install soapysdr airspy airspyhf protobuf
+        run: brew install soapysdr airspyhf protobuf
       - name: Build
         run: cargo build --release --features airspy,airspyhf
       - name: Package tarball
@@ -96,12 +96,12 @@ jobs:
           | `xng_*.deb` | Debian/Ubuntu packages (x86_64 + arm64) |
 
           Intel macOS: build from source (GitHub retired its free Intel
-          macOS runners) — `brew install soapysdr airspy airspyhf protobuf
+          macOS runners) — `brew install soapysdr airspyhf protobuf
           && cargo build --release --features airspy,airspyhf`.
 
           Binaries are built with SoapySDR plus the native Airspy backends;
-          they need `libsoapysdr` (and `libairspy`/`libairspyhf` for native
-          Airspy) at runtime — the .deb declares these. Multi-arch Docker
+          they need `libsoapysdr` (and `libairspyhf` for the native HF+
+          backend; the R2/Mini backend is pure Rust) at runtime — the .deb declares these. Multi-arch Docker
           images (amd64/arm64/armv7) are published to
           `ghcr.io/airframesio/xng` for the same tag.
 
