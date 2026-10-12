@@ -841,9 +841,37 @@ fn run_station_cmd(config: &std::path::Path) -> anyhow::Result<()> {
             Err(e) => tracing::warn!("APRS satellite correlation disabled: {e}"),
         }
     }
+    // Sessions naming the same `sdr` share one open device: it is opened
+    // once and its sample stream tee'd to each of them (xng_sdr::tee), so e.g.
+    // ACARS and VDL2 decode off one wideband capture.
+    let mut sharers: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for sess in &st.sessions {
+        if let Some(sdr) = &sess.sdr {
+            *sharers.entry(sdr.trim()).or_default() += 1;
+        }
+    }
+    // Per shared SDR: the consumers not yet handed out, the backend name, and
+    // the tuning (rate, center, gain) of the session that opened it.
+    struct Shared {
+        consumers: Vec<xng_sdr::tee::TeeSource>,
+        backend: &'static str,
+        tuning: (f64, u64, Option<f64>),
+        opened_by: usize,
+    }
+    let mut shared: std::collections::HashMap<&str, Shared> = std::collections::HashMap::new();
+
     let mut sessions = Vec::new();
     for (i, sess) in st.sessions.iter().enumerate() {
         let label = format!("session {} ({})", i + 1, sess.mode);
+        let shares = sess.sdr.as_deref().map_or(1, |s| sharers[s.trim()]);
+        if shares > 1
+            && (sess.sample_rate.is_none() || sess.center.is_none() || sess.channels.is_empty())
+        {
+            anyhow::bail!(
+                "{label}: {shares} sessions share `{}`; each needs explicit sample-rate, center, and channels",
+                sess.sdr.as_deref().unwrap_or_default()
+            );
+        }
         // Tuning: explicit values, or the mode plan via the same
         // derivation the TUI uses.
         let tune = TuneOpts {
@@ -875,6 +903,36 @@ fn run_station_cmd(config: &std::path::Path) -> anyhow::Result<()> {
 
         let (source, sdr_info): (Box<dyn xng_sdr::IqSource>, Option<xng_types::SdrInfo>) =
             match (&sess.sdr, &sess.file) {
+                (Some(sdr), None) if shares > 1 => {
+                    let key = sdr.trim();
+                    let tuning = (rate, center_hz, sess.gain);
+                    if let Some(sh) = shared.get(key) {
+                        anyhow::ensure!(
+                            sh.tuning == tuning,
+                            "{label}: shares `{sdr}` with session {} but tunes it differently \
+                             ({rate} S/s @ {center_hz} Hz, gain {:?} vs {} S/s @ {} Hz, gain {:?}); \
+                             sessions sharing an SDR need the same sample-rate, center, and gain",
+                            sh.opened_by,
+                            sess.gain,
+                            sh.tuning.0,
+                            sh.tuning.1,
+                            sh.tuning.2
+                        );
+                    } else {
+                        let (src, backend) = open_sdr(sdr, rate, center_hz, sess.gain)?;
+                        tracing::info!("{sdr}: opened once, shared by {shares} sessions");
+                        let consumers = xng_sdr::tee::tee(src, shares, xng_sdr::tee::Overflow::Drop);
+                        shared.insert(key, Shared { consumers, backend, tuning, opened_by: i + 1 });
+                    }
+                    let sh = shared.get_mut(key).expect("inserted above");
+                    let src = sh.consumers.pop().expect("one consumer per sharing session");
+                    let info = xng_types::SdrInfo {
+                        id: sdr.clone(),
+                        driver: sh.backend.to_string(),
+                        serial: None,
+                    };
+                    (Box::new(src) as Box<dyn xng_sdr::IqSource>, Some(info))
+                }
                 (Some(sdr), None) => {
                     let (src, backend) = open_sdr(sdr, rate, center_hz, sess.gain)?;
                     let info = xng_types::SdrInfo {
