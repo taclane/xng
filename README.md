@@ -363,6 +363,33 @@ sdr = "driver=airspy"   # rate/center/channels derive from the plan
 mode = "vdl2"
 ```
 
+**Several modes on one SDR.** Sessions that name the same `sdr` share it:
+the device is opened once and every session decodes the same capture, each
+on its own thread. One wideband receiver can therefore replace a bank of
+dongles — e.g. an Airspy R2 at 10 MS/s covering VHF ACARS *and* VDL2
+(129–137 MHz):
+
+```toml
+[[session]]
+sdr = "driver=airspy,serial=0123456789ABCDEF"
+mode = "acars"
+sample-rate = 10000000
+center = "132.9875M"
+channels = ["129.125", "130.025", "130.450", "131.125", "131.550", "131.725"]
+
+[[session]]
+sdr = "driver=airspy,serial=0123456789ABCDEF"   # same device
+mode = "vdl2"
+sample-rate = 10000000
+center = "132.9875M"
+channels = ["136.650", "136.800", "136.975"]
+```
+
+Sharing sessions must give explicit `sample-rate`, `center`, and `channels`,
+and agree on rate, center, and `gain`. A session that falls behind loses
+blocks itself (logged as `shared SDR WARNING`) without stalling the device
+or the other sessions.
+
 A full example config and a hardened systemd unit live in
 [`contrib/`](contrib/). Sessions can also replay IQ files (`file =`
 instead of `sdr =`) — useful for regression runs over recorded nights.

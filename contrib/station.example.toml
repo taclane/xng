@@ -43,6 +43,24 @@ channels = ["130.025", "131.125", "131.550", "131.725"]
 sdr = "driver=airspy"          # rate/center/channels derive from the
 mode = "vdl2"                  # mode's built-in plan when omitted
 
+# Several modes can share one SDR: sessions naming the same `sdr` string
+# open it once and decode the same capture. Each sharing session needs
+# explicit sample-rate/center/channels, matching rate, center and gain:
+#
+# [[session]]
+# sdr = "driver=airspy,serial=0123456789ABCDEF"
+# mode = "acars"
+# sample-rate = 10000000
+# center = "132.9875M"
+# channels = ["131.125", "131.550", "131.725"]
+#
+# [[session]]
+# sdr = "driver=airspy,serial=0123456789ABCDEF"
+# mode = "vdl2"
+# sample-rate = 10000000
+# center = "132.9875M"
+# channels = ["136.650", "136.800", "136.975"]
+
 [[session]]
 sdr = "driver=rtlsdr,serial=00000002"
 mode = "adsb"
