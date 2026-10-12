@@ -102,7 +102,7 @@ second-class path — they get every xng output and the application layer.
 | Device | `--sdr` | Backend | Notes |
 |---|---|---|---|
 | RTL-SDR | `driver=rtlsdr` | SoapySDR | The budget workhorse for VHF (ACARS, VDL2, AIS) and — with an L-band antenna + LNA — Aero, STD-C, Iridium, ADS-B |
-| Airspy R2 / Mini | `driver=airspy` | **native** (libairspy, `--features airspy`) | 24 MHz–1.75 GHz, 12-bit; `serial=…` (hex) selects a unit, `bias=1` powers an LNA. Validated live (Mini: off-air ACARS at 6 MS/s; R2: full-band Iridium at 10 MS/s) |
+| Airspy R2 / Mini | `driver=airspy` | **native** (pure-Rust libairspy-rs, `--features airspy`) | 24 MHz–1.75 GHz, 12-bit; `serial=…` (hex) selects a unit, `bias=1` powers an LNA. Validated live (Mini: off-air ACARS at 6 MS/s; R2: full-band Iridium at 10 MS/s) |
 | Airspy HF+ / Discovery | `driver=airspyhf` | **native** (libairspyhf, `--features airspyhf`) | The classic HFDL receiver; 768 kS/s divides cleanly into every xng HF/VHF channel rate |
 | SDRplay (RSP series) | `driver=sdrplay` | SoapySDR | The Soapy module wraps the proprietary API |
 | Anything else | per its Soapy module | SoapySDR | HackRF, LimeSDR, USRP, BladeRF, … |
@@ -158,8 +158,8 @@ runs real-time on Pi-class hardware via `--demod-effort`.
 Grab a [release](https://github.com/airframesio/xng/releases/latest) —
 tarballs for Linux x86_64/arm64 and macOS Apple Silicon, `.deb` packages
 for Debian/Ubuntu (which declare the runtime libraries), and `SHA256SUMS`.
-The binaries need `libsoapysdr` at runtime (plus `libairspy`/`libairspyhf`
-for native Airspy):
+The binaries need `libsoapysdr` at runtime (plus `libairspyhf` for the
+native HF+ backend; the R2/Mini backend is pure Rust):
 
 ```bash
 sudo apt install ./xng-0.21.0-arm64.deb    # pulls runtime deps
@@ -193,12 +193,14 @@ cargo test --workspace
 ```
 
 Airspy owners can skip the SoapyAirspy shim: native backends for the
-R2/Mini (libairspy) and the HF+ / Discovery (libairspyhf) are built in
-with feature flags:
+R2/Mini and the HF+ / Discovery are built in with feature flags. The R2/Mini
+backend is pure Rust ([libairspy-rs](https://crates.io/crates/libairspy-rs))
+and needs no system packages; the HF+ backend links libairspyhf:
 
 ```bash
-sudo apt install libairspy-dev libairspyhf-dev   # or: brew install airspy airspyhf
-cargo build --release --features airspy,airspyhf
+cargo build --release --features airspy                  # R2/Mini: nothing to install
+sudo apt install libairspyhf-dev   # or: brew install airspyhf
+cargo build --release --features airspy,airspyhf         # + HF+ / Discovery
 ```
 
 No hardware? Everything works from IQ recordings (`xng decode`,
@@ -555,7 +557,7 @@ ACARS from any carrier flows through one application layer
 |---|---|
 | `xng-types` | Normalized message model shared by everything |
 | `xng-dsp` | Channelizer, DDC, FIR/NCO, Viterbi, Reed-Solomon, CRCs, scramblers |
-| `xng-sdr` | SoapySDR, native Airspy (libairspy/libairspyhf), and IQ-file sample sources |
+| `xng-sdr` | SoapySDR, native Airspy (libairspy-rs/libairspyhf), and IQ-file sample sources |
 | `xng-acars` | ACARS application layer (ARINC 622, ADS-C, CPDLC, media advisory) |
 | `xng-proto` | asf-2.0 protobuf schema + conversions |
 | `xng-mode-*` | One decode core per mode, each with a spec-faithful modulator for loopback tests, vendored validation fixtures, and a `PROVENANCE.md` |

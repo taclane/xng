@@ -12,8 +12,9 @@ default = []
 # SoapySDR-backed device capture. Requires libSoapySDR development files.
 # SoapySDR is the multi-vendor path (and the only path for SDRplay).
 soapy = ["dep:soapysdr"]
-# Native Airspy R2/Mini capture via libairspy (no SoapyAirspy module needed).
-airspy = []
+# Native Airspy R2/Mini capture via libairspy-rs: a pure-Rust port of
+# libairspy on nusb. No C library, libusb, or SoapyAirspy module needed.
+airspy = ["dep:libairspy"]
 # Native Airspy HF+ / Discovery capture via libairspyhf.
 airspyhf = []
 
@@ -21,6 +22,7 @@ airspyhf = []
 num-complex.workspace = true
 thiserror.workspace = true
 soapysdr = { version = "0.4", optional = true }
+libairspy = { package = "libairspy-rs", version = "0.2.1", optional = true }
 
 [build-dependencies]
 pkg-config = "0.3"

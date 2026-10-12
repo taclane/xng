@@ -1,6 +1,6 @@
 //! `xng devices` — enumerate SDR hardware.
 //!
-//! Native backends (libairspy/libairspyhf) are listed first when compiled in;
+//! Native backends (libairspy-rs/libairspyhf) are listed first when compiled in;
 //! SoapySDR enumeration follows and honors the filter string. A device with
 //! both a native backend and a Soapy module installed appears in both lists —
 //! the native line shows the exact `--sdr` args that select the native path.
@@ -16,7 +16,7 @@ pub fn run(filter: &str) -> anyhow::Result<()> {
 
     #[cfg(feature = "airspy")]
     for sn in xng_sdr::airspy::enumerate()? {
-        lines.push(format!("driver=airspy,serial={sn:016X} (native libairspy)"));
+        lines.push(format!("driver=airspy,serial={sn:016X} (native libairspy-rs)"));
     }
     #[cfg(feature = "airspyhf")]
     for sn in xng_sdr::airspyhf::enumerate()? {

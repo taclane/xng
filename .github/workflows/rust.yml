@@ -15,7 +15,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install dependencies
-      run: sudo apt install -y libsoapysdr-dev libairspy-dev libairspyhf-dev protobuf-compiler
+      run: sudo apt install -y libsoapysdr-dev libairspyhf-dev protobuf-compiler
     - name: Build
       run: cargo build --verbose --release --features airspy,airspyhf
     - name: Run tests
