@@ -25,6 +25,12 @@ fn addr_type(kind: &str) -> &'static str {
 /// Render a VDL2 message as dumpvdl2 `decoded:json`. Only ACARS-over-AVLC
 /// frames (the Airframes-valuable content) are emitted today; `None` otherwise.
 pub fn format_dumpvdl2(msg: &Message) -> Option<Value> {
+    format_dumpvdl2_with_station(msg, None)
+}
+
+/// As [`format_dumpvdl2`], but stamp `station_id` as `vdl2.station` — where
+/// dumpvdl2 `--station-id` puts it, and how the ingest attributes the feed.
+pub fn format_dumpvdl2_with_station(msg: &Message, station_id: Option<&str>) -> Option<Value> {
     let MessageBody::Acars(core) = &msg.body else {
         return None;
     };
@@ -143,6 +149,9 @@ pub fn format_dumpvdl2(msg: &Message) -> Option<Value> {
     if let Some(s) = msg.signal.freq_skew_hz {
         vdl2["freq_skew"] = json!(s);
     }
+    if let Some(id) = station_id {
+        vdl2["station"] = json!(id);
+    }
     Some(json!({ "vdl2": vdl2 }))
 }
 
@@ -185,15 +194,19 @@ mod tests {
                     f.acars.as_ref().and_then(|b| b.core.tail.as_deref()) == Some("HB-IJW");
                 if is_hbijw && out.is_none() {
                     let msg = xng_mode_vdl2::to_message(&f, 136_975_000, -10.77, prov.clone());
-                    out = format_dumpvdl2(&msg);
+                    out = Some(msg);
                 }
             }
         }
-        let v = out.expect("HB-IJW VDL2 ACARS serialized to dumpvdl2 JSON");
+        let msg = out.expect("HB-IJW VDL2 ACARS decoded");
+        let v = format_dumpvdl2(&msg).expect("HB-IJW VDL2 ACARS serialized to dumpvdl2 JSON");
         let vdl2 = &v["vdl2"];
         assert_eq!(vdl2["app"]["name"], "dumpvdl2");
         assert_eq!(vdl2["app"]["ver"], "2.6.0");
         assert_eq!(vdl2["freq"], 136_975_000);
+        assert!(vdl2.get("station").is_none(), "no station unless one is given");
+        let stamped = format_dumpvdl2_with_station(&msg, Some("XX-KSEA-VDL2")).unwrap();
+        assert_eq!(stamped["vdl2"]["station"], "XX-KSEA-VDL2");
         let avlc = &vdl2["avlc"];
         assert_eq!(avlc["src"]["addr"], "0468D2", "{avlc}");
         assert_eq!(avlc["src"]["type"], "Aircraft");

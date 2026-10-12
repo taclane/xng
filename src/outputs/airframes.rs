@@ -202,7 +202,7 @@ fn serialize_datagram(msg: &Message, mode: Mode, station_id: &str) -> Option<Vec
         Mode::AcarsPoa => crate::outputs::acarsdec_json::format_acarsdec_with_station(msg, Some(station_id))
             .map(|v| v.to_string().into_bytes()),
         // FEED-2.1: dumpvdl2 decoded:json for VDL2 ACARS-over-AVLC frames.
-        Mode::Vdl2 => crate::outputs::dumpvdl2_json::format_dumpvdl2(msg)
+        Mode::Vdl2 => crate::outputs::dumpvdl2_json::format_dumpvdl2_with_station(msg, Some(station_id))
             .map(|v| v.to_string().into_bytes()),
         // FEED-2.2 dumphfdl decoded:json lands here (oracle-gated, see TODO).
         _ => None,
