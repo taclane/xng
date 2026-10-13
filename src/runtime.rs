@@ -882,6 +882,8 @@ fn parse_serial(selector: &str) -> Option<String> {
     })
 }
 
+/// Spawn the configured output sinks (console, files, feeds, servers,
+/// dashboard) on the current tokio runtime, each subscribed to `bus`.
 fn spawn_outputs(
     bus: &MessageBus,
     outputs: &OutputConfig,

@@ -32,11 +32,13 @@ const OPENFREEMAP_ATTRIBUTION: &str = "<a href=\"https://openfreemap.org\">OpenF
 const OSM_ATTRIBUTION: &str = "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors";
 const OSM_TILES: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
+/// URL of an OpenFreeMap public style.
 fn openfreemap(style: &str) -> String {
     format!("https://tiles.openfreemap.org/styles/{style}")
 }
 
 impl Default for MapConfig {
+    /// OpenFreeMap `dark`, vector.
     fn default() -> Self {
         Self { style_url: openfreemap("dark"), format: MapFormat::Vector }
     }
@@ -93,10 +95,12 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
+    /// The parsed `/map/config.json` body for `c`.
     fn client(c: &MapConfig) -> Value {
         serde_json::from_str(&c.client_json()).unwrap()
     }
 
+    /// No config means OpenFreeMap dark as a vector map, with attribution.
     #[test]
     fn defaults_to_openfreemap_dark_vector() {
         let c = MapConfig::default();
@@ -107,6 +111,8 @@ mod tests {
         assert!(j["attribution"].as_str().unwrap().contains("OpenStreetMap"));
     }
 
+    /// Every named style maps to its OpenFreeMap URL; unknown names and
+    /// formats are rejected.
     #[test]
     fn named_styles_and_validation() {
         for s in STYLES {
@@ -117,6 +123,8 @@ mod tests {
         assert!(MapConfig::new(None, None, Some("svg")).is_err());
     }
 
+    /// `style-url` wins over `style`, carries no attribution of its own, and
+    /// must be an http(s) URL.
     #[test]
     fn style_url_overrides_and_is_validated() {
         let c = MapConfig::new(Some("positron"), Some("https://tiles.example.org/styles/dark"), None).unwrap();
@@ -128,6 +136,8 @@ mod tests {
         assert!(MapConfig::new(None, Some("https://x/ y"), None).is_err());
     }
 
+    /// Raster draws OpenStreetMap tiles, which are also every config's
+    /// fallback.
     #[test]
     fn raster_and_fallback_use_osm() {
         let j = client(&MapConfig::new(None, None, Some("raster")).unwrap());

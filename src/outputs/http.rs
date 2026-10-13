@@ -1204,6 +1204,9 @@ fn export_kml(d: &Dash) -> String {
     s
 }
 
+/// Serve the web dashboard on `addr`: the page, its JSON/GeoJSON/GPX/KML
+/// endpoints and `/map/config.json` (what basemap `map` says to draw), fed
+/// from the message bus until it closes.
 pub async fn run(
     mut rx: broadcast::Receiver<Arc<Message>>,
     addr: String,

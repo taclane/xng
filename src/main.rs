@@ -77,6 +77,7 @@ struct TuneOpts {
     max_ppm: Option<f64>,
 }
 
+/// Parse `--receiver-pos` / `receiver-pos` ("lat,lon").
 fn parse_receiver_pos(s: &Option<String>) -> anyhow::Result<Option<(f64, f64)>> {
     match s {
         None => Ok(None),
@@ -177,6 +178,8 @@ struct OutputOpts {
 }
 
 impl OutputOpts {
+    /// Turn the CLI output flags into an output config (default basemap) and
+    /// the station identity they name.
     fn build(&self) -> anyhow::Result<(runtime::OutputConfig, String)> {
         anyhow::ensure!(
             !(self.asf2_quic_insecure && self.asf2_quic_ca.is_some()),
@@ -589,6 +592,8 @@ fn centroid_off_dc(channels: &[u64], avoid_dc: bool) -> u64 {
     if avoid_dc && channels.contains(&center) { center + 25_000 } else { center }
 }
 
+/// Parse the command line, set up logging and the decode pool, and run the
+/// chosen subcommand.
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
