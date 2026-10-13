@@ -212,10 +212,15 @@ map.attributionControl.addAttribution('silhouettes &copy; <a href="https://githu
         // before it first loads, or a whole source failing later. Individual
         // tile errors are transient and left to MapLibre.
         const gl = layer.getMaplibreMap();
-        let loaded = false, fellBack = false;
+        // Tile errors (network, 5xx) only count until a tile has loaded, so a
+        // dead tile host falls back but a stray failure later doesn't. MapLibre
+        // treats tile 404s as empty tiles and reports nothing for them.
+        let loaded = false, fellBack = false, tileLoaded = false, tileErrors = 0;
         gl.once('load', () => { loaded = true; });
+        gl.on('sourcedata', e => { if (e.tile) tileLoaded = true; });
         gl.on('error', e => {
-          if (fellBack || e.tile || (loaded && !e.sourceId)) return;
+          if (fellBack || (loaded && !e.sourceId && !e.tile)) return;
+          if (e.tile && (tileLoaded || ++tileErrors < 3)) return;
           fellBack = true;
           map.removeLayer(layer);
           raster(fallback);
