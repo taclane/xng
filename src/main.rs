@@ -282,6 +282,9 @@ enum Command {
     Station {
         /// Path to the station TOML config
         config: PathBuf,
+        /// Plan the inputs and print what would be opened, then exit
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show a running station's sessions and live decode status (queries
     /// its web dashboard endpoint)
@@ -648,7 +651,7 @@ fn main() -> anyhow::Result<()> {
         Command::Listen { sdr, gain, tune, output } => {
             listen(&sdr, gain, &tune, &output)
         }
-        Command::Station { config } => run_station_cmd(&config),
+        Command::Station { config, dry_run } => run_station_cmd(&config, dry_run),
         Command::Status { http } => run_status_cmd(&http),
         Command::IqInfo { file, sample_rate, format, center_freq, fft_size } => {
             commands::iq_info::run(&file, sample_rate, format.as_deref(), center_freq, fft_size)
@@ -786,9 +789,20 @@ fn main() -> anyhow::Result<()> {
 /// served it. `driver=airspy` / `driver=airspyhf` use the native backends
 /// when compiled in (falling through to SoapySDR otherwise, where a
 /// SoapyAirspy module may exist); `backend=soapy` forces the fallthrough.
-fn run_station_cmd(config: &std::path::Path) -> anyhow::Result<()> {
+fn run_station_cmd(config: &std::path::Path, dry_run: bool) -> anyhow::Result<()> {
     let mut st = commands::station::load(config)?;
     st.expand_inputs(&probe_rate_caps)?;
+    if dry_run {
+        for s in &st.sessions {
+            let input = s.sdr.clone().or_else(|| s.file.as_ref().map(|f| f.display().to_string())).unwrap_or_default();
+            let tuning = match (s.sample_rate, &s.center) {
+                (Some(r), Some(c)) => format!("{:.4} MHz at {} S/s", freq::parse_hz(c)? as f64 / 1e6, r as u64),
+                _ => "tuning from the mode plan".to_string(),
+            };
+            println!("{input}  {}  {} channel(s)  {tuning}", s.mode, s.channels.len());
+        }
+        return Ok(());
+    }
 
     // Shared outputs (the first session's SessionConfig carries them).
     // Airframes feeding is routed per-mode/per-session by the router below,

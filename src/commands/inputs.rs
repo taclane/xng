@@ -224,7 +224,15 @@ impl StationFile {
                 );
             }
             let caps = match (&s.device, s.sample_rate) {
-                (Some(dev), None) => probe(dev),
+                (Some(dev), None) => {
+                    let caps = probe(dev);
+                    anyhow::ensure!(
+                        !matches!(caps, RateCaps::Unknown),
+                        "[[sdr]] {}: couldn't ask `{dev}` which sample rates it supports (not connected, in use by another program, or no driver for it in this build); set `sample-rate` on the [[sdr]]",
+                        s.id
+                    );
+                    caps
+                }
                 _ => RateCaps::Unknown,
             };
             let (rate, center) = plan_capture(&needs, s.sample_rate, center, min_rate, &caps)
