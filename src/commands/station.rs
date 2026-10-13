@@ -1,5 +1,7 @@
-//! Station config file: several decode sessions (mode + SDR/file +
-//! channels) plus one shared output set, run as a single process.
+//! Station config file: inputs (`[[sdr]]`), the decoders that read them
+//! (`[[decoder]]`, see [`super::inputs`]) and one shared output set, run as a
+//! single process. Self-contained `[[session]]` blocks (device + mode in one)
+//! are also accepted, as below.
 //!
 //! ```toml
 //! station-id = "XX-KSEA-1"
@@ -44,7 +46,15 @@ pub struct StationFile {
     pub station_id: String,
     #[serde(default)]
     pub outputs: OutputsToml,
-    #[serde(rename = "session")]
+    /// Inputs: SDRs (or IQ files) that decoders read (`[[sdr]]`).
+    #[serde(rename = "sdr", default)]
+    pub sdrs: Vec<super::inputs::SdrToml>,
+    /// Decoders: a mode and channels on one `[[sdr]]` (`[[decoder]]`).
+    #[serde(rename = "decoder", default)]
+    pub decoders: Vec<super::inputs::DecoderToml>,
+    /// Self-contained sessions (device + mode in one block); sessions naming
+    /// the same `sdr` string share the device.
+    #[serde(rename = "session", default)]
     pub sessions: Vec<SessionToml>,
 }
 
@@ -183,7 +193,11 @@ pub fn load(path: &Path) -> anyhow::Result<StationFile> {
         .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
     let f: StationFile = toml::from_str(&text)
         .map_err(|e| anyhow::anyhow!("parse {}: {e}", path.display()))?;
-    anyhow::ensure!(!f.sessions.is_empty(), "{}: no [[session]] entries", path.display());
+    anyhow::ensure!(
+        !f.sessions.is_empty() || !f.decoders.is_empty(),
+        "{}: no [[decoder]] or [[session]] entries",
+        path.display()
+    );
     for (i, sess) in f.sessions.iter().enumerate() {
         anyhow::ensure!(
             sess.sdr.is_some() ^ sess.file.is_some(),
@@ -292,10 +306,10 @@ mod tests {
         let f: StationFile =
             toml::from_str(include_str!("../../contrib/station.example.toml")).unwrap();
         assert_eq!(f.station_id, "XX-KSEA-1");
-        assert_eq!(f.sessions.len(), 3);
         assert!(f.outputs.feed_airframes);
-        assert_eq!(f.sessions[1].mode, "vdl2");
-        assert!(f.sessions[1].channels.is_empty()); // plan-derived
+        assert_eq!((f.sdrs.len(), f.decoders.len(), f.sessions.len()), (3, 4, 0));
+        assert_eq!(f.decoders[2].sdr, "airspy");
+        assert_eq!(f.decoders[2].mode, "vdl2");
     }
 
     #[test]

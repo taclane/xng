@@ -343,6 +343,11 @@ SDRs, sharing one feed, one output set, and one metrics endpoint
 xng station station.toml
 ```
 
+A station config has three parts: **inputs** (`[[sdr]]`: a device or IQ
+file and its RF settings), **decoders** (`[[decoder]]`: a mode and its
+channels, reading one input), and **outputs** (`[outputs]`: feeds,
+dashboard, metrics, shared by everything):
+
 ```toml
 station-id = "XX-KSEA-1"
 
@@ -350,45 +355,34 @@ station-id = "XX-KSEA-1"
 feed-airframes = true
 metrics = "0.0.0.0:9090"
 
-[[session]]
-sdr = "driver=rtlsdr,serial=00000001"
-gain = 48
+[[sdr]]
+id = "airspy"
+device = "driver=airspy,serial=0123456789ABCDEF"
+gain = 20
+
+[[decoder]]
+sdr = "airspy"
 mode = "acars"
-sample-rate = 2400000
-center = "131.000M"
-channels = ["130.025", "131.550", "131.725"]
-
-[[session]]
-sdr = "driver=airspy"   # rate/center/channels derive from the plan
-mode = "vdl2"
-```
-
-**Several modes on one SDR.** Sessions that name the same `sdr` share it:
-the device is opened once and every session decodes the same capture, each
-on its own thread. One wideband receiver can therefore replace a bank of
-dongles — e.g. an Airspy R2 at 10 MS/s covering VHF ACARS *and* VDL2
-(129–137 MHz):
-
-```toml
-[[session]]
-sdr = "driver=airspy,serial=0123456789ABCDEF"
-mode = "acars"
-sample-rate = 10000000
-center = "132.9875M"
 channels = ["129.125", "130.025", "130.450", "131.125", "131.550", "131.725"]
 
-[[session]]
-sdr = "driver=airspy,serial=0123456789ABCDEF"   # same device
+[[decoder]]
+sdr = "airspy"
 mode = "vdl2"
-sample-rate = 10000000
-center = "132.9875M"
 channels = ["136.650", "136.800", "136.975"]
 ```
 
-Sharing sessions must give explicit `sample-rate`, `center`, and `channels`,
-and agree on rate, center, and `gain`. A session that falls behind loses
-blocks itself (logged as `shared SDR WARNING`) without stalling the device
-or the other sessions.
+All decoders on one input share a single capture: the device is opened
+once and each decoder runs on its own thread, so one wideband receiver can
+replace a bank of dongles (here an Airspy R2 covering VHF ACARS *and* VDL2,
+129–137 MHz). xng plans the capture from the decoders' channels — the
+center, and the smallest sample rate the device supports that keeps every
+channel in band (10 MS/s here) — unless the `[[sdr]]` sets `sample-rate`
+and `center`. IQ-file inputs (`file =` instead of `device =`) need both.
+A decoder that falls behind loses blocks itself (logged as
+`shared SDR WARNING`) without stalling the device or the other decoders.
+
+Self-contained `[[session]]` blocks (device, tuning and mode in one) are
+still accepted; sessions naming the same `sdr` string share the device.
 
 A full example config and a hardened systemd unit live in
 [`contrib/`](contrib/). Sessions can also replay IQ files (`file =`

@@ -29,42 +29,51 @@ http = "0.0.0.0:8080"          # live web dashboard (map + messages)
 # [outputs.airframes.hfdl]
 # enabled = false               # decode HFDL locally, do not feed it
 
-[[session]]
-sdr = "driver=rtlsdr,serial=00000001"
+# Inputs: one [[sdr]] per device (or IQ file: `file =` plus sample-rate
+# and center). sample-rate/center are planned from the decoders' channels
+# when omitted: the center, and the smallest rate the device supports that
+# keeps every channel in band.
+[[sdr]]
+id = "rtl1"
+device = "driver=rtlsdr,serial=00000001"
 gain = 48
+
+[[sdr]]
+id = "airspy"
+device = "driver=airspy,serial=0123456789ABCDEF"
+gain = 20
+
+[[sdr]]
+id = "rtl2"
+device = "driver=rtlsdr,serial=00000002"
+
+# Decoders: a mode and its channels on one input. Every decoder on an input
+# shares its capture (the device is opened once).
+[[decoder]]
+sdr = "rtl1"
 mode = "acars"
-sample-rate = 2400000
-center = "131.000M"
 channels = ["130.025", "131.125", "131.550", "131.725"]
 # feed = false                          # disable Airframes feed for this decoder
 # airframes-station-id = "XX-KSEA-ACARS2"  # override the station id for it
 
-[[session]]
-sdr = "driver=airspy"          # rate/center/channels derive from the
-mode = "vdl2"                  # mode's built-in plan when omitted
+[[decoder]]
+sdr = "airspy"
+mode = "acars"
+channels = ["129.125", "130.450", "131.475", "131.825"]
 
-# Several modes can share one SDR: sessions naming the same `sdr` string
-# open it once and decode the same capture. Each sharing session needs
-# explicit sample-rate/center/channels, matching rate, center and gain:
-#
-# [[session]]
-# sdr = "driver=airspy,serial=0123456789ABCDEF"
-# mode = "acars"
-# sample-rate = 10000000
-# center = "132.9875M"
-# channels = ["131.125", "131.550", "131.725"]
-#
-# [[session]]
-# sdr = "driver=airspy,serial=0123456789ABCDEF"
-# mode = "vdl2"
-# sample-rate = 10000000
-# center = "132.9875M"
-# channels = ["136.650", "136.800", "136.975"]
+[[decoder]]
+sdr = "airspy"
+mode = "vdl2"
+channels = ["136.650", "136.800", "136.975"]
 
-[[session]]
-sdr = "driver=rtlsdr,serial=00000002"
+[[decoder]]
+sdr = "rtl2"
 mode = "adsb"
-sample-rate = 2000000
-center = "1090M"
 channels = ["1090"]
 receiver-pos = "47.62,-122.35" # enables surface-position decode
+
+# Self-contained sessions (device, tuning and mode in one block) still work;
+# rate/center/channels derive from the mode's built-in plan when omitted:
+# [[session]]
+# sdr = "driver=airspy"
+# mode = "vdl2"

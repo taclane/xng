@@ -1,6 +1,7 @@
 pub mod devices;
 pub mod extern_cmd;
 pub mod ingest;
+pub mod inputs;
 pub mod iq_info;
 pub mod scan;
 pub mod selftest;

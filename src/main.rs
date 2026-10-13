@@ -787,7 +787,8 @@ fn main() -> anyhow::Result<()> {
 /// when compiled in (falling through to SoapySDR otherwise, where a
 /// SoapyAirspy module may exist); `backend=soapy` forces the fallthrough.
 fn run_station_cmd(config: &std::path::Path) -> anyhow::Result<()> {
-    let st = commands::station::load(config)?;
+    let mut st = commands::station::load(config)?;
+    st.expand_inputs(&probe_rate_caps)?;
 
     // Shared outputs (the first session's SessionConfig carries them).
     // Airframes feeding is routed per-mode/per-session by the router below,
