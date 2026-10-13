@@ -249,6 +249,15 @@ impl Vdl2MultiChannelDecoder {
         self.backs.len()
     }
 
+    /// Which shared front end is in use: "fast-convolution", or the
+    /// "shared-decimation" fallback.
+    pub fn front_end(&self) -> &'static str {
+        match self.front {
+            Front::FastConv(_) => "fast-convolution",
+            Front::Shared(_) => "shared-decimation",
+        }
+    }
+
     /// Feed wideband IQ; returns the decoded frames for channel `i` as
     /// `(i, frames)` for every channel that produced any.
     pub fn process(&mut self, input: &[Complex<f32>]) -> Vec<(usize, Vec<Vdl2Frame>)> {
