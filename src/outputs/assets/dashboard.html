@@ -166,9 +166,38 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
 <script>
 const map = L.map('map', { zoomControl: true }).setView([40, -95], 4);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-  attribution: '&copy; OpenStreetMap, &copy; CARTO · silhouettes &copy; <a href="https://github.com/plane-watch/pw-silhouettes">Plane Watch</a>', maxZoom: 18,
-}).addTo(map);
+map.attributionControl.addAttribution('silhouettes &copy; <a href="https://github.com/plane-watch/pw-silhouettes">Plane Watch</a>');
+
+// Basemap. /map/config.json names a MapLibre style (OpenFreeMap by default:
+// OpenStreetMap vector tiles, no API key) or asks for raster. The vector map
+// renders with MapLibre beneath the Leaflet overlays; OpenStreetMap raster
+// tiles are the fallback (no WebGL, or the style or MapLibre fails to load).
+(function basemap() {
+  const OSM = { tiles: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', maxZoom: 19 };
+  const raster = fb => L.tileLayer(fb.tiles, { attribution: fb.attribution, maxZoom: fb.maxZoom }).addTo(map);
+  const webgl = () => { try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch (e) { return false; } };
+  const asset = (tag, url, sri) => new Promise((ok, err) => {
+    const el = document.createElement(tag);
+    if (tag === 'link') { el.rel = 'stylesheet'; el.href = url; } else { el.src = url; }
+    el.integrity = sri; el.crossOrigin = 'anonymous'; el.onload = ok; el.onerror = err;
+    document.head.appendChild(el);
+  });
+  fetch('/map/config.json').then(r => r.json()).catch(() => ({ format: 'raster', fallback: OSM })).then(cfg => {
+    const fallback = cfg.fallback || OSM;
+    if (cfg.format !== 'vector' || !webgl()) return raster(fallback);
+    Promise.all([
+      asset('link', 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css', 'sha384-MinO0mNliZ3vwppuPOUnGa+iq619pfMhLVUXfC4LHwSCvF9H+6P/KO4Q7qBOYV5V'),
+      asset('script', 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js', 'sha384-SYKAG6cglRMN0RVvhNeBY0r3FYKNOJtznwA0v7B5Vp9tr31xAHsZC0DqkQ/pZDmj'),
+    ])
+      .then(() => asset('script', 'https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js', 'sha384-4CB9Vtol9LN6lGgBCvmPLbUEZwilrqIvPieSRurgAXAB7FVJaLS9n8WyAIA5wjQ+'))
+      // Fetch the style here so a failure falls back to raster instead of
+      // leaving an empty map.
+      .then(() => fetch(cfg.style).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }))
+      .then(style => L.maplibreGL({ style, attribution: cfg.attribution }).addTo(map))
+      .catch(() => raster(fallback));
+  });
+})();
 
 // Entity markers live in per-class layer groups so the layer control can
 // toggle Flights / Ships / Beacons. Visible by default.
