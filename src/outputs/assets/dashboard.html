@@ -194,7 +194,33 @@ map.attributionControl.addAttribution('silhouettes &copy; <a href="https://githu
       // Fetch the style here so a failure falls back to raster instead of
       // leaving an empty map.
       .then(() => fetch(cfg.style).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }))
-      .then(style => L.maplibreGL({ style, attribution: cfg.attribution }).addTo(map))
+      .then(style => {
+        // A style passed as an object has lost its URL, so resolve relative
+        // resource URLs against it here. new URL() percent-encodes the
+        // {z}/{fontstack}-style template braces; put them back.
+        const abs = u => /^[a-z][a-z\d+.-]*:/i.test(u) ? u
+          : new URL(u, cfg.style).href.replace(/%7B/gi, '{').replace(/%7D/gi, '}');
+        if (typeof style.sprite === 'string') style.sprite = abs(style.sprite);
+        else if (Array.isArray(style.sprite)) style.sprite.forEach(s => { if (s && typeof s.url === 'string') s.url = abs(s.url); });
+        if (typeof style.glyphs === 'string') style.glyphs = abs(style.glyphs);
+        for (const src of Object.values(style.sources || {})) {
+          if (typeof src.url === 'string') src.url = abs(src.url);
+          if (Array.isArray(src.tiles)) src.tiles = src.tiles.map(abs);
+        }
+        const layer = L.maplibreGL({ style, attribution: cfg.attribution }).addTo(map);
+        // Fall back to raster if the vector map can't come up: any error
+        // before it first loads, or a whole source failing later. Individual
+        // tile errors are transient and left to MapLibre.
+        const gl = layer.getMaplibreMap();
+        let loaded = false, fellBack = false;
+        gl.once('load', () => { loaded = true; });
+        gl.on('error', e => {
+          if (fellBack || e.tile || (loaded && !e.sourceId)) return;
+          fellBack = true;
+          map.removeLayer(layer);
+          raster(fallback);
+        });
+      })
       .catch(() => raster(fallback));
   });
 })();
